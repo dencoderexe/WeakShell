@@ -1,0 +1,5 @@
+#define server_flag "-s"
+#define client_flag "-c"
+#define daemon_flag "-d"
+#define log_flag    "-l"
+#define help_flag   "-h"
