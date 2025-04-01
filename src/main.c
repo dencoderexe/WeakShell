@@ -1,13 +1,22 @@
 // DenCoder.EXE
 
-#include "headers.h"
+#include <stdio.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include "flags.h"
+#include "help.h"
+#include "colors.h"
+#include "utils.h"
+#include "server.h"
+#include "client.h"
 
 typedef struct Flags {
     bool c;
     bool s;
-    bool d;
-    bool l;
     bool h;
+    bool p;
+    bool u;
 } Flags;
 
 Flags flags;
@@ -29,14 +38,14 @@ void parse_args(int argc, char* argv[]) {
         else if (strcmp(argv[i], client_flag) == 0) {
             flags.c = true;
         }
-        else if (strcmp(argv[i], daemon_flag) == 0) {
-            flags.d = true;
-        }
-        else if (strcmp(argv[i], log_flag) == 0) {
-            flags.l = true;
-        }
         else if (strcmp(argv[i], help_flag) == 0) {
             flags.h = true;
+        }
+        else if (strcmp(argv[i], port_flag) == 0) { //
+            flags.p = true;
+        }
+        else if (strcmp(argv[i], socket_flag) == 0) { //
+            flags.u = true;
         }
         else {
             printf(RED "Error: " RESET "Unknown argument <%s>.\n", argv[i]);
@@ -50,13 +59,10 @@ int launch(void) {
         return EXIT_SUCCESS;
     }
     else if (flags.s) {
-        return server(flags.l, flags.d);
+        return server();
     }
     else if (flags.c) {
-        if (flags.d) {
-            printf(RED "Error: " RESET "client cannot be launched in daemon mode.\n");
-        }
-        return client(flags.l);
+        return client();
     }
     else {
         no_launch_args();
@@ -66,12 +72,10 @@ int launch(void) {
 
 int main(int argc, char* argv[]) {  
     if (argc == 1) {
-        no_launch_args();
-        return EXIT_FAILURE;
+        return server();
     }
     else {
         parse_args(argc, argv);
+        return launch();
     }
-    
-    return launch();
 }

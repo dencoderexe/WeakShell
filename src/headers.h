@@ -1,9 +1,0 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include "client.c"
-#include "server.c"
-#include "flags.h"
-#include "colors.h"
-#include "help.h"
