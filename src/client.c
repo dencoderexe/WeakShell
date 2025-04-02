@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include "colors.h"
 #include "help.h"
@@ -14,31 +15,42 @@ static int server_socket;
 static struct sockaddr_in server_address;
 static char server_response[1024];
 static char uprompt[1024];
+static ssize_t bytes_received;
 
-int connect_to_server(void) {
+static void halt(int status) {
+    if (status == EXIT_SUCCESS) {
+        send(server_socket, uprompt, strlen(uprompt), 0);
+        close(server_socket);
+        exit(EXIT_SUCCESS);
+    }
+    else {
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }    
+}
+
+void connect_to_server(int port, char addr[]) {
     // create socket, AF_INET - IPv4, SOCK_STREAM - TCP, 0 - IP
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
     // specify an address for the socket
     server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(8080);
-    server_address.sin_addr.s_addr = INADDR_ANY;
-
-    if(connect(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)) != 0) {
-        perror(RED "Error: connect()" RESET);
-        close(server_socket);
-        return -1;
+    server_address.sin_port = htons(port);
+    if (inet_pton(AF_INET, addr, &server_address.sin_addr) <= 0) {
+        perror(RED "Error: inet_pton()" RESET);
+        halt(EXIT_FAILURE);
     }
-    else {
-        fprintf(stdout, GREEN "Connection established.\n" RESET);
-        return 0;
+
+    if (connect(server_socket, (struct sockaddr*)&server_address, sizeof(server_address)) != 0) {
+        perror(RED "Error: connect()" RESET);
+        halt(EXIT_FAILURE);
     }
 }
 
-static int halt(void) {
-    printf(CYAN "Disconnected.\n" RESET);
+static void quit(void) {
+    printf(CYAN "Session terminated.\n" RESET);
     close(server_socket);
-    return EXIT_SUCCESS;
+    exit(EXIT_SUCCESS);
 }
 
 static void help(void) {
@@ -46,39 +58,46 @@ static void help(void) {
     printf(help_client);
 }
 
-int client(void) {    
-    if (connect_to_server() != 0) {
-        return EXIT_FAILURE;
+static void receive(void) {
+    memset(server_response, 0, sizeof(server_response));  // Clear buffer
+    bytes_received = recv(server_socket, &server_response, sizeof(server_response) - 1, 0);
+    if (bytes_received <= 0) {
+        // If recv() returns 0, the server disconnected
+        if (bytes_received == 0) {
+            printf(RED "Server disconnected.\n" RESET);
+        } 
+        // If recv() returns -1, an error occurred
+        else {
+            perror(RED "Error: recv()" RESET);
+        }
+        halt(EXIT_FAILURE);
     }
+}
 
-    while(true) {
-        default_prompt();
-        if (fgets(uprompt, sizeof(uprompt), stdin)) {
-            uprompt[strcspn(uprompt, "\n")] = '\0';
+int client(int port, char addr[]) {    
+    connect_to_server(port, addr);
+
+    while (true) {
+        receive();
+        fprintf(stdout, "%s", server_response);
+
+        memset(uprompt, 0, sizeof(uprompt));  // Clear buffer
+        if (fscanf(stdin, " %1023s", uprompt) == EOF) {
+            perror(RED "Error: fscanf()" RESET);
         }
 
         if (strcmp(uprompt, "help") == 0) {
             help();
         }
         else if (strcmp(uprompt, "halt") == 0) {
-            return halt();
+            halt(EXIT_SUCCESS);
+        }
+        else if (strcmp(uprompt, "quit") == 0) {
+            quit();
         }
         else {
             send(server_socket, uprompt, strlen(uprompt), 0);
-            memset(uprompt, 0, sizeof(uprompt));  // Clear buffer
-            ssize_t bytes_received = recv(server_socket, &server_response, sizeof(server_response) - 1, 0);
-            if (bytes_received <= 0) {
-                // If recv() returns 0, the server disconnected
-                if (bytes_received == 0) {
-                    printf(RED "Server disconnected.\n" RESET);
-                } 
-                // If recv() returns -1, an error occurred
-                else {
-                    perror(RED "Error: recv()" RESET);
-                }
-                close(server_socket);
-                return EXIT_FAILURE;
-            }
+            receive();
             fprintf(stdout, "%s\n", server_response);
         }
     }

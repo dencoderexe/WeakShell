@@ -1,1 +1,1 @@
-int server(void);
+int server(int port, char addr[]);

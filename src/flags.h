@@ -3,5 +3,6 @@
 // #define daemon_flag "-d"
 // #define log_flag    "-l"
 #define help_flag   "-h"
+#define ip_flag     "-i"
 #define port_flag   "-p"
 #define socket_flag "-u"

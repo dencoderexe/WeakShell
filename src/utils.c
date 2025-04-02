@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <sys/errno.h>
 #include <sys/unistd.h>
+#include <string.h>
 #include "colors.h"
 
 typedef struct DPrompt {
@@ -13,9 +14,8 @@ typedef struct DPrompt {
     char cwd[1024];
 } DPrompt;
 
-DPrompt dprompt;
-
-void default_prompt(void) {
+void default_prompt(char dprompt_buffer[]) {
+    DPrompt dprompt;
     time_t current_time;
     struct tm *local_time;
 
@@ -42,6 +42,7 @@ void default_prompt(void) {
         exit(EXIT_FAILURE);
     }
     
-    printf(YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", dprompt.hostdate, dprompt.hosttime, dprompt.username, 
+    memset(dprompt_buffer, 0, strlen(dprompt_buffer));  // Clear buffer
+    sprintf(dprompt_buffer, YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", dprompt.hostdate, dprompt.hosttime, dprompt.username, 
                                 dprompt.hostname, dprompt.cwd);
 }

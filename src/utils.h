@@ -1,1 +1,1 @@
-void default_prompt(void);
+void default_prompt(char dprompt_buffer[]);
