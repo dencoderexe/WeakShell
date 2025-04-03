@@ -9,4 +9,5 @@ pre-build:
 	gcc -Wall -Wextra -Werror -c $(SRC)client.c -o $(OBJ)client.o
 
 build:
+	make pre-build ;
 	gcc -Wall -Wextra -Werror $(SRC)/main.c -o $(BLD)$(TARGET) $(OBJ)utils.o $(OBJ)server.o $(OBJ)client.o

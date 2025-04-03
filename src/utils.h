@@ -1,1 +1,3 @@
-void default_prompt(char dprompt_buffer[]);
+typedef struct DPrompt DPrompt;
+
+void default_prompt(DPrompt* dprompt);

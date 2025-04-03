@@ -5,25 +5,26 @@
 #include <sys/unistd.h>
 #include <string.h>
 #include "colors.h"
+#include "utils.h"
 
 typedef struct DPrompt {
     char* username;
     char hostname[256];
-    char hostdate[16];
-    char hosttime[16];
+    char hostdate[11];
+    char hosttime[9];
     char cwd[1024];
+    char prompt_buffer[1300];
 } DPrompt;
 
-void default_prompt(char dprompt_buffer[]) {
-    DPrompt dprompt;
+void default_prompt(DPrompt* dprompt) {
     time_t current_time;
     struct tm *local_time;
 
-    if ((dprompt.username = getlogin()) == NULL) {
+    if ((dprompt->username = getlogin()) == NULL) {
         perror(RED "Error: getlogin()" RESET);
         exit(EXIT_FAILURE);
     }
-    if ((gethostname(dprompt.hostname, sizeof(dprompt.hostname))) != 0) {
+    if ((gethostname(dprompt->hostname, sizeof(dprompt->hostname))) != 0) {
         perror(RED "Error: gethostname()" RESET);
         exit(EXIT_FAILURE);
     }
@@ -35,14 +36,10 @@ void default_prompt(char dprompt_buffer[]) {
         perror(RED "Error: localtime()" RESET);
         exit(EXIT_FAILURE);
     }
-    strftime(dprompt.hostdate, sizeof(dprompt.hostdate), "%d.%m.%Y", local_time);
-    strftime(dprompt.hosttime, sizeof(dprompt.hosttime), "%H:%M:%S", local_time);
-    if ((getcwd(dprompt.cwd, sizeof(dprompt.cwd))) == NULL) {
+    strftime(dprompt->hostdate, sizeof(dprompt->hostdate), "%d.%m.%Y", local_time);
+    strftime(dprompt->hosttime, sizeof(dprompt->hosttime), "%H:%M:%S", local_time);
+    if ((getcwd(dprompt->cwd, sizeof(dprompt->cwd))) == NULL) {
         perror(RED "Error: getcwd()" RESET);
         exit(EXIT_FAILURE);
     }
-    
-    memset(dprompt_buffer, 0, strlen(dprompt_buffer));  // Clear buffer
-    sprintf(dprompt_buffer, YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", dprompt.hostdate, dprompt.hosttime, dprompt.username, 
-                                dprompt.hostname, dprompt.cwd);
 }
