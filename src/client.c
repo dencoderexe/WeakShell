@@ -116,6 +116,10 @@ int client(char* port, char* addr, char* socket_path) {
 
         if (strcmp(c.uprompt, "help") == 0) {
             help();
+            memset(c.uprompt, 0, strlen(c.uprompt));  // Clear buffer
+            send(c.server_socket, c.uprompt, c.bytes_read, 0);
+            receive();
+            fprintf(stdout, "%s", c.server_response);
         }
         else if (strcmp(c.uprompt, "halt") == 0) {
             halt(EXIT_SUCCESS);

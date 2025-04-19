@@ -25,8 +25,7 @@ typedef struct DPrompt {
     char cwd[SIZE];
 } DPrompt;
 
-typedef struct Server
-{
+typedef struct Server {
     int server_socket;
     int client_socket;
     struct sockaddr_in socket_addr_in;
@@ -34,16 +33,26 @@ typedef struct Server
     char server_response[SIZE*10];
 } Server;
 
-typedef struct Request
-{
+typedef struct Pipe {
+    char* tokens;
+} Pipe;
+
+typedef struct Task {
+    char* tokens;
+    Pipe* pipes;
+    int pipe_count;
+    char* task_pipe_buffer;
+} Task;
+
+typedef struct UPrompt {
     ssize_t bytes_received;
     char client_request[SIZE];
-    int token_buffer_size;
-    char** tokens;
-} Request;
+    Task* tasks;
+    int task_count;
+} UPrompt;
 
 Server s;
-Request r;
+UPrompt u;
 DPrompt d;
 
 static void halt(int status) {
@@ -52,8 +61,8 @@ static void halt(int status) {
     exit(status);
 }
 
-static void cd(void) {
-    chdir(r.tokens[1]);
+static void cd(char* path) {
+    chdir(path);
 }
 
 void bind_socket_in(char* port, char* addr) {
@@ -128,11 +137,11 @@ void accept_connection(void) {
 }
 
 static int receive(void) {
-    memset(r.client_request, 0, sizeof(r.client_request));  // Clear buffer
-    r.bytes_received = recv(s.client_socket, r.client_request, sizeof(r.client_request) - 1, 0);
-    if (r.bytes_received <= 0) {
+    memset(u.client_request, 0, sizeof(u.client_request));  // Clear buffer
+    u.bytes_received = recv(s.client_socket, u.client_request, sizeof(u.client_request) - 1, 0);
+    if (u.bytes_received <= 0) {
         // If recv() returns 0, the server disconnected
-        if (r.bytes_received == 0) {
+        if (u.bytes_received == 0) {
             printf(RED "Client disconnected.\n" RESET);
             close(s.client_socket);
             return -1;
@@ -153,109 +162,188 @@ void send_dprompt(void) {
     send(s.client_socket, s.server_response, strlen(s.server_response), 0);
 }
 
-void parse_request(void) {
+void parse_semicolon(void) {
     char* token;
     int buf_pos = 0;
     char* request_ptr;
-    r.token_buffer_size = 1;
-    r.tokens = (char**)malloc(r.token_buffer_size * sizeof(char*));
-    if (!r.tokens) {
-        perror(RED "Error: malloc()" RESET);
+    u.task_count = 1;
+    u.tasks = (Task*)calloc(u.task_count, sizeof(Task));
+    if (!u.tasks) {
+        perror(RED "Error: calloc(semicolon)" RESET);
         halt(EXIT_FAILURE);
     }
 
-    token = strtok_r(r.client_request, DELIMS, &request_ptr);
+    token = strtok_r(u.client_request, ";", &request_ptr);
     while (token != NULL) {
-        r.tokens[buf_pos] = token;
+        u.tasks[buf_pos].tokens = token;
         buf_pos++;
 
-        if (buf_pos >= r.token_buffer_size) {
-            r.token_buffer_size++;
-            r.tokens = (char**)realloc(r.tokens, r.token_buffer_size * sizeof(char*));
-            if (!r.tokens) {
-                perror(RED "Error: malloc()" RESET);
+        if (buf_pos >= u.task_count) {
+            u.task_count++;
+            u.tasks = (Task*)realloc(u.tasks, u.task_count * sizeof(Task));
+            if (!u.tasks) {
+                perror(RED "Error: realloc(semicolon)" RESET);
                 halt(EXIT_FAILURE);
             }
         }
-        token = strtok_r(NULL, DELIMS, &request_ptr);
+        token = strtok_r(NULL, ";", &request_ptr);
     }
-    r.tokens[buf_pos] = NULL; 
+    u.tasks[buf_pos].tokens = NULL; 
 }
 
-int internal_commands(void) {
-    if (r.tokens[0] == NULL) {
+void parse_pipeline(Task *task) {
+    char* token;
+    int buf_pos = 0;
+    char* request_ptr;
+    task->pipe_count = 1;
+    task->pipes = (Pipe*)calloc(task->pipe_count, sizeof(Pipe));
+    if (!task->pipes) {
+        perror(RED "Error: calloc(pipeline)" RESET);
+        halt(EXIT_FAILURE);
+    }
+
+    token = strtok_r(task->tokens, "|", &request_ptr);
+    while (token != NULL) {
+        task->pipes[buf_pos].tokens = token;
+        buf_pos++;
+
+        if (buf_pos >= task->pipe_count) {
+            task->pipe_count++;
+            task->pipes = (Pipe*)realloc(task->pipes, task->pipe_count * sizeof(Pipe));
+            if (!task->pipes) {
+                perror(RED "Error: realloc(pipeline)" RESET);
+                halt(EXIT_FAILURE);
+            }
+        }
+        token = strtok_r(NULL, "|", &request_ptr);
+    }
+    task->pipes[buf_pos].tokens = NULL; 
+}
+
+void parse_request(void) {
+    parse_semicolon();
+    for (int i = 0; i < u.task_count - 1; i++) {
+        parse_pipeline(&u.tasks[i]);
+    }
+}
+
+int internal_commands(char** tokens) {
+    if (tokens[0] == NULL) {
         return 1;
     }
-    else if (strcmp(r.tokens[0], "cd") == 0) {
-        cd();
+    else if (strcmp(tokens[0], "cd") == 0) {
+        cd(tokens[1]);
         return 1;
     }
-    else if (strcmp(r.tokens[0], "halt") == 0) {
+    else if (strcmp(tokens[0], "halt") == 0) {
         halt(EXIT_SUCCESS);
     }
     return 0;
 }
 
-void execpipe() {
+void exec_pipe(Pipe* pipes, int pipe_count) {
+    int task_pipe_fd[2];
+    if (pipe(task_pipe_fd) == -1) {
+        perror(RED "Error: pipe(exec_pipe)" RESET);
+        halt(EXIT_FAILURE);
+    }
 
+    int pipefd[2 * (pipe_count - 1)];
+    if (pipe_count > 1) {
+        for (int i = 0; i < pipe_count - 1; i++) {
+            if (pipe(pipefd + i * 2) == -1) {
+                perror(RED "Error: pipe(exec_pipe)" RESET);
+                halt(EXIT_FAILURE);
+            }
+        }
+    }
+    
+    for (int i = 0; i < pipe_count; i++) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror(RED "Error: pid(exec_pipe)" RESET);
+            halt(EXIT_FAILURE);
+        }
+
+        if (pid == 0) {
+            if (i > 0) {
+                if (dup2(pipefd[(i - 1) * 2], STDIN_FILENO) == -1) {
+                    perror(RED "Error: pipe(exec_pipe)" RESET);
+                    exit(EXIT_FAILURE);
+                }
+            }
+            if (i < pipe_count - 1) {
+                if (dup2(pipefd[i * 2 + 1], STDOUT_FILENO) == -1) {
+                    perror("dup2 (stdout)");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            if (i == pipe_count - 1 || pipe_count == 1) {
+                close(task_pipe_fd[0]);
+                if (dup2(task_pipe_fd[1], STDOUT_FILENO) == -1) {
+                    perror("dup2 (stdout)");
+                    exit(EXIT_FAILURE);
+                }
+                close(task_pipe_fd[1]);
+            }
+
+            for (int j = 0; j < 2 * (pipe_count - 1); j++) {
+                close(pipefd[j]);
+            }
+
+            char* request_ptr;
+            char* pipe_tokens[100];
+            int pipe_token_count = 0;
+            char* token = strtok_r(pipes[i].tokens, DELIMS, &request_ptr);
+
+            while (token != NULL) {
+                pipe_tokens[pipe_token_count++] = token;
+                token = strtok_r(NULL, DELIMS, &request_ptr);
+            }
+            pipe_tokens[pipe_token_count] = NULL;
+
+            if (internal_commands(pipe_tokens)) {
+                return;
+            }
+
+            if (execvp(pipe_tokens[0], pipe_tokens) == -1) {
+                perror(RED "Error: execvp(exec_pipe)" RESET);
+                printf("\r");
+                halt(EXIT_FAILURE);
+            }
+        }
+    }
+
+    for (int i = 0; i < 2 * (pipe_count - 1); i++) {
+        close(pipefd[i]);
+    }
+
+    close(task_pipe_fd[1]);
+    int nbytes;
+    int total_bytes_read = strlen(s.server_response);
+    while ((nbytes = read(task_pipe_fd[0], s.server_response + total_bytes_read, SIZE - total_bytes_read)) > 0) {
+        total_bytes_read += nbytes;
+    }
+    if (nbytes == -1) {
+        perror(RED "Error: read()" RESET);
+        exit(EXIT_FAILURE);
+    }
+    close(task_pipe_fd[0]);
+
+    for (int i = 0; i < pipe_count; i++) {
+        wait(NULL);
+    }
+}
+
+void exec_task(Task* task) {
+    exec_pipe(task->pipes, task->pipe_count - 1);
 }
 
 void process_request(void) {
     memset(s.server_response, 0, sizeof(s.server_response));  // Clear response buffer
 
-    if (internal_commands()) {
-        return;
-    }
-
-
-
-    pid_t pid;
-    int status;
-    // pipefd[0] - read end of the pipe
-    // pipefd[1] - write end of the pipe
-    int pipefd[2];
-
-    if (pipe(pipefd) == -1) {
-        perror(RED "Error: pipe()" RESET);
-        halt(EXIT_FAILURE);
-    }
-
-    pid = fork();
-    if (pid == 0) {
-        close(pipefd[0]);
-        if (dup2(pipefd[1], STDOUT_FILENO) == -1) {
-            perror(RED "Error: dup2()" RESET);
-            halt(EXIT_FAILURE);
-        }
-        close(pipefd[1]);
-
-        if (execvp(r.tokens[0], r.tokens) == -1) {
-            perror(RED "Error: execvp()" RESET);
-            printf("\r");
-            halt(EXIT_FAILURE);
-        }
-    }
-    else if (pid < 0) {
-        perror(RED "Error: fork()" RESET);
-        halt(EXIT_FAILURE);
-    }
-    else {
-        close(pipefd[1]);
-
-        int nbytes;
-        int total_bytes_read = 0;
-        while ((nbytes = read(pipefd[0], s.server_response + total_bytes_read, SIZE - total_bytes_read)) > 0) {
-            total_bytes_read += nbytes;
-        }
-
-        if (nbytes == -1) {
-            perror(RED "Error: read()" RESET);
-            exit(EXIT_FAILURE);
-        }
-
-        close(pipefd[0]);
-
-        waitpid(pid, &status, 0);
+    for (int i = 0; i < u.task_count && u.tasks[i].tokens != NULL; i++) {
+        exec_task(&u.tasks[i]);
     }
 }
 
@@ -267,7 +355,7 @@ void recv_eval_req_loop(void) {
             break;
         }
         else {
-            printf("%s\n", r.client_request);
+            printf("%s\n", u.client_request);
             parse_request();
             process_request();
             if (strlen(s.server_response) == 0) {
