@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -16,8 +17,9 @@
 typedef struct Client
 {
     int server_socket;
-    struct sockaddr_in server_address;
-    char server_response[SIZE*2];
+    struct sockaddr_in socket_addr_in;
+    struct sockaddr_un socket_addr_un;
+    char server_response[SIZE*10];
     char* uprompt;
     size_t uprompt_len;
     ssize_t bytes_read;
@@ -40,21 +42,32 @@ static void halt(int status) {
     }    
 }
 
-void connect_to_server(int port, char addr[]) {
-    // create socket, AF_INET - IPv4, SOCK_STREAM - TCP, 0 - IP
-    c.server_socket = socket(AF_INET, SOCK_STREAM, 0);
+void connect_to_server(char* port, char* addr, char* socket_path) {
+    if (socket_path == NULL) {
+        c.server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
-    // specify an address for the socket
-    c.server_address.sin_family = AF_INET;
-    c.server_address.sin_port = htons(port);
-    if (inet_pton(AF_INET, addr, &c.server_address.sin_addr) <= 0) {
-        perror(RED "Error: inet_pton()" RESET);
-        halt(EXIT_FAILURE);
+        c.socket_addr_in.sin_family = AF_INET;
+        c.socket_addr_in.sin_port = htons(atoi(port));
+        if (inet_pton(AF_INET, addr, &c.socket_addr_in.sin_addr) <= 0) {
+            perror(RED "Error: inet_pton()" RESET);
+            halt(EXIT_FAILURE);
+        }
+
+        if (connect(c.server_socket, (struct sockaddr*)&c.socket_addr_in, sizeof(c.socket_addr_in)) != 0) {
+            perror(RED "Error: connect()" RESET);
+            halt(EXIT_FAILURE);
+        }
     }
+    else {
+        c.server_socket = socket(AF_UNIX, SOCK_STREAM, 0);
 
-    if (connect(c.server_socket, (struct sockaddr*)&c.server_address, sizeof(c.server_address)) != 0) {
-        perror(RED "Error: connect()" RESET);
-        halt(EXIT_FAILURE);
+        c.socket_addr_un.sun_family = AF_UNIX;
+        strncpy(c.socket_addr_un.sun_path, socket_path, sizeof(c.socket_addr_un.sun_path) - 1);
+
+        if (connect(c.server_socket, (struct sockaddr*)&c.socket_addr_un, sizeof(c.socket_addr_un)) != 0) {
+            perror(RED "Error: connect()" RESET);
+            halt(EXIT_FAILURE);
+        }
     }
 }
 
@@ -86,8 +99,8 @@ static void receive(void) {
     }
 }
 
-int client(int port, char addr[]) {    
-    connect_to_server(port, addr);
+int client(char* port, char* addr, char* socket_path) {    
+    connect_to_server(port, addr, socket_path);
 
     while (true) {
         receive();

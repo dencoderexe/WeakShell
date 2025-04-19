@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <netinet/tcp.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
@@ -27,8 +29,9 @@ typedef struct Server
 {
     int server_socket;
     int client_socket;
-    struct sockaddr_in server_address;
-    char server_response[SIZE*2];
+    struct sockaddr_in socket_addr_in;
+    struct sockaddr_un socket_addr_un;
+    char server_response[SIZE*10];
 } Server;
 
 typedef struct Request
@@ -49,25 +52,52 @@ static void halt(int status) {
     exit(status);
 }
 
-void bind_socket(int port, char addr[]) {
-    // create socket, AF_INET - IPv4, SOCK_STREAM - TCP, 0 - IP
+static void cd(void) {
+    chdir(r.tokens[1]);
+}
+
+void bind_socket_in(char* port, char* addr) {
     if ((s.server_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror(RED "Error: socket()" RESET);
         halt(EXIT_FAILURE);
     }
 
-    // specify address and port for the socket
-    s.server_address.sin_family = AF_INET;
-    s.server_address.sin_port = htons(port);
-    if (inet_pton(AF_INET, addr, &s.server_address.sin_addr) <= 0) {
+    s.socket_addr_in.sin_family = AF_INET;
+    s.socket_addr_in.sin_port = htons(atoi(port));
+    if (inet_pton(AF_INET, addr, &s.socket_addr_in.sin_addr) <= 0) {
         perror(RED "Error: inet_pton()" RESET);
         halt(EXIT_FAILURE);
     }
 
-    // bind the socket
-    if (bind(s.server_socket, (struct sockaddr*)&s.server_address, sizeof(s.server_address)) != 0) {
+    if (bind(s.server_socket, (struct sockaddr*)&s.socket_addr_in, sizeof(s.socket_addr_in)) != 0) {
         perror(RED "Error: bind()" RESET);
         halt(EXIT_FAILURE);
+    }
+}
+
+void bind_socket_un(char* socket_path) {
+    if ((s.server_socket = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror(RED "Error: socket()" RESET);
+        halt(EXIT_FAILURE);
+    }
+
+    s.socket_addr_un.sun_family = AF_UNIX;
+    strncpy(s.socket_addr_un.sun_path, socket_path, sizeof(s.socket_addr_un.sun_path) - 1);
+
+    unlink(socket_path);
+
+    if (bind(s.server_socket, (struct sockaddr*)&s.socket_addr_un, sizeof(s.socket_addr_un)) != 0) {
+        perror(RED "Error: bind()" RESET);
+        halt(EXIT_FAILURE);
+    }
+}
+
+void bind_socket(char* port, char* addr, char* socket_path) {
+    if (socket_path == NULL) {
+        bind_socket_in(port, addr);
+    }
+    else {
+        bind_socket_un(socket_path);
     }
 
     // listen for connections on a socket
@@ -75,9 +105,18 @@ void bind_socket(int port, char addr[]) {
         perror(RED "Error: listen()" RESET);
         halt(EXIT_FAILURE);
     }
+
+    if (socket_path == NULL) {
+        printf(GREEN "Server is listening on %s:%s.\n" RESET, addr, port);
+    }
+    else {
+        printf(GREEN "Server is listening on <%s>.\n" RESET, socket_path);
+    }
 }
 
 void accept_connection(void) {
+    // char* client_addr;
+    // char* client_port;
     // accept a connection on a socket
     if ((s.client_socket = accept(s.server_socket, NULL, NULL)) == -1) {
         perror(RED "Error: accept()" RESET);
@@ -143,8 +182,32 @@ void parse_request(void) {
     r.tokens[buf_pos] = NULL; 
 }
 
+int internal_commands(void) {
+    if (r.tokens[0] == NULL) {
+        return 1;
+    }
+    else if (strcmp(r.tokens[0], "cd") == 0) {
+        cd();
+        return 1;
+    }
+    else if (strcmp(r.tokens[0], "halt") == 0) {
+        halt(EXIT_SUCCESS);
+    }
+    return 0;
+}
+
+void execpipe() {
+
+}
+
 void process_request(void) {
     memset(s.server_response, 0, sizeof(s.server_response));  // Clear response buffer
+
+    if (internal_commands()) {
+        return;
+    }
+
+
 
     pid_t pid;
     int status;
@@ -203,20 +266,20 @@ void recv_eval_req_loop(void) {
         if (receive() != 0) {
             break;
         }
-        else if (strcmp(r.client_request, "halt") == 0) {
-            halt(EXIT_SUCCESS);
-        }
         else {
             printf("%s\n", r.client_request);
             parse_request();
             process_request();
+            if (strlen(s.server_response) == 0) {
+                strcpy(s.server_response, "\r");
+            }
             send(s.client_socket, s.server_response, strlen(s.server_response), 0);
         }            
     }
 }
 
-void server(int port, char addr[]) {   
-    bind_socket(port, addr);
+void server(char* port, char* addr, char* socket_path) {   
+    bind_socket(port, addr, socket_path);
 
     while (true) {
         accept_connection();

@@ -1,1 +1,1 @@
-int client(int port, char addr[]);
+int client(char* port, char* addr, char* socket_path);

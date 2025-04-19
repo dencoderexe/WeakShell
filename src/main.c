@@ -24,8 +24,9 @@ typedef struct Flags {
 
 typedef struct Args
 {
-    int port;
-    char addr[16];
+    char* port;
+    char* addr;
+    char* socket_path;
 } Args;
 
 static Flags flags;
@@ -55,7 +56,7 @@ void parse_args(int argc, char* argv[]) {
         else if (strcmp(argv[i], port_flag) == 0) {
             if ((i+1) < argc && isdigit(argv[i+1][0])) {
                 flags.p = true;
-                args.port = atoi(argv[i+1]);
+                args.port = argv[i+1]; //atoi(argv[i+1]);
             }
             else {
                 printf(RED "Error: " RESET "Wrong port format <%s>.\n", argv[i+1]);
@@ -66,7 +67,8 @@ void parse_args(int argc, char* argv[]) {
         else if (strcmp(argv[i], ip_flag) == 0) {
             if ((i+1) < argc) {
                 flags.i = true;
-                strcpy(args.addr, argv[i+1]);
+                args.addr = argv[i+1];
+                // strcpy(args.addr, argv[i+1]);
             }
             else {
                 printf(RED "Error: " RESET "Wrong IP address format <%s>.\n", argv[i+1]);
@@ -74,9 +76,17 @@ void parse_args(int argc, char* argv[]) {
             }
             i++;
         }
-        // else if (strcmp(argv[i], socket_flag) == 0) {
-        //     flags.u = true;
-        // }
+        else if (strcmp(argv[i], socket_flag) == 0) {
+            if ((i+1) < argc) {
+                flags.u = true;
+                args.socket_path = argv[i+1];
+            }
+            else {
+                printf(RED "Error: " RESET "Wrong socket PATH format <%s>.\n", argv[i+1]);
+                exit(EXIT_FAILURE);
+            }
+            i++;
+        }
         else {
             printf(RED "Error: " RESET "Unknown argument <%s>.\n", argv[i]);
             exit(EXIT_FAILURE);
@@ -89,20 +99,19 @@ void launch(void) {
         help();
     }
     else if (flags.s) {
-        server(args.port, args.addr);
+        server(args.port, args.addr, args.socket_path);
     }
     else if (flags.c) {
-        client(args.port, args.addr);
+        client(args.port, args.addr, args.socket_path);
     }
     else {
-        server(args.port, args.addr);
-        exit(EXIT_SUCCESS);
+        server(args.port, args.addr, args.socket_path);
     }
 }
 
 int main(int argc, char* argv[]) {
     args.port = PORT;
-    strcpy(args.addr, ADDR);
+    args.addr = ADDR;
 
     parse_args(argc, argv);
     launch();
