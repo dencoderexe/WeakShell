@@ -255,10 +255,15 @@ int internal_commands(char** tokens) {
     return 0;
 }
 
-void redirect_file(char* tokens, char* tmp_string, int* input_fd, int* output_fd, char* redirection) {
+void redirect_file(char* tokens, char* tmp_string, int* input_fd, int* output_fd, char* redirection, int* task_pipe_fd) {
     char* redirections[100] = {NULL};
     tmp_string = strdup(tokens);
     get_tokens(tmp_string, redirections, " ");
+
+    if (dup2(task_pipe_fd[1], STDERR_FILENO) == -1) {
+        perror(RED "Error: pipe(redirect_file)" RESET);
+        exit(EXIT_FAILURE);
+    }
 
     for (int j = 0; redirections[j] != NULL; j++) {
         if (strcmp(redirections[j], redirection) == 0 && redirections[j+1] != NULL) {
@@ -339,7 +344,7 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
 
         if (pid == 0) {
             if (i == 0) {
-                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, "<");     
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, "<", task_pipe_fd);     
             }
             if (i > 0) {
                 if (dup2(pipefd[(i - 1) * 2], STDIN_FILENO) == -1) {
@@ -347,21 +352,18 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
                     exit(EXIT_FAILURE);
                 }
             }
-            if (i < pipe_count - 1) {
-                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">");  
-                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">>");  
-
+            if (i < pipe_count - 1) { 
                 if (output_fd == -1 && dup2(pipefd[i * 2 + 1], STDOUT_FILENO) == -1) {
                     perror("dup2 (stdout)");
                     exit(EXIT_FAILURE);
                 }
             }
             if (i == pipe_count - 1 || pipe_count == 1) {
-                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">");  
-                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">>"); 
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">", task_pipe_fd);  
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">>", task_pipe_fd); 
 
                 close(task_pipe_fd[0]);
-                if (output_fd == -1 && dup2(task_pipe_fd[1], STDOUT_FILENO) == -1) {
+                if (output_fd == -1 && (dup2(task_pipe_fd[1], STDOUT_FILENO) == -1 || dup2(task_pipe_fd[1], STDERR_FILENO) == -1)) {
                     perror("dup2 (stdout)");
                     halt(EXIT_FAILURE);
                 }
