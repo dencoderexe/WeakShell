@@ -43,3 +43,16 @@ void default_prompt(DPrompt* dprompt) {
         exit(EXIT_FAILURE);
     }
 }
+
+void get_tokens(char* source, char** tokens, char* delims) {
+    char* request_ptr;
+    int token_index = 0;
+    char* token = strtok_r(source, delims, &request_ptr);
+
+    while (token != NULL) {
+        tokens[token_index] = token;
+        token = strtok_r(NULL, delims, &request_ptr);
+        token_index++;
+    }
+    tokens[token_index] = NULL;
+}

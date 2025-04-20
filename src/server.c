@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include "utils.h"
 #include "help.h"
 #include "utils.h"
@@ -41,7 +42,6 @@ typedef struct Task {
     char* tokens;
     Pipe* pipes;
     int pipe_count;
-    char* task_pipe_buffer;
 } Task;
 
 typedef struct UPrompt {
@@ -162,6 +162,20 @@ void send_dprompt(void) {
     send(s.client_socket, s.server_response, strlen(s.server_response), 0);
 }
 
+void clear_uprompt(void) {
+    for (int i = 0; i < u.task_count - 1; i++) {
+        if (u.tasks[i].pipes != NULL) {
+            free(u.tasks[i].pipes);
+            u.tasks[i].pipes = NULL;
+        }
+    }
+
+    if (u.tasks != NULL) {
+        free(u.tasks);
+        u.tasks = NULL;
+    }
+}
+
 void parse_semicolon(void) {
     char* token;
     int buf_pos = 0;
@@ -241,8 +255,66 @@ int internal_commands(char** tokens) {
     return 0;
 }
 
+void redirect_file(char* tokens, char* tmp_string, int* input_fd, int* output_fd, char* redirection) {
+    char* redirections[100] = {NULL};
+    tmp_string = strdup(tokens);
+    get_tokens(tmp_string, redirections, " ");
+
+    for (int j = 0; redirections[j] != NULL; j++) {
+        if (strcmp(redirections[j], redirection) == 0 && redirections[j+1] != NULL) {
+            printf("%s\n", redirections[j+1]);
+            if (strcmp(redirection, ">") == 0) {
+                *output_fd = open(redirections[j+1], O_WRONLY | O_CREAT);
+                if (*output_fd == -1) {
+                    perror(RED "Error: open(O_WRONLY | O_CREAT)" RESET);
+                    free(tmp_string); 
+                    halt(EXIT_FAILURE);
+                }
+            }
+            else if (strcmp(redirection, ">>") == 0) {
+                *output_fd = open(redirections[j+1], O_APPEND | O_CREAT | O_WRONLY);
+                if (*output_fd == -1) {
+                    perror(RED "Error: open(O_APPEND | O_CREAT | O_WRONLY)" RESET);
+                    free(tmp_string); 
+                    halt(EXIT_FAILURE);
+                }
+            }
+            else if (strcmp(redirection, "<") == 0) {
+                *input_fd = open(redirections[j+1], O_RDONLY);
+                if (*input_fd == -1) {
+                    perror(RED "Error: open(O_RDONLY)" RESET);
+                    free(tmp_string); 
+                    halt(EXIT_FAILURE);
+                }
+            }
+            if (*input_fd == -1) {
+                if (dup2(*output_fd, STDOUT_FILENO) == -1) {
+                    perror(RED "Error: dup2(*output_fd, STDOUT_FILENO)" RESET);
+                    free(tmp_string); 
+                    halt(EXIT_FAILURE);
+                }
+            }
+            else {
+                if (dup2(*input_fd, STDIN_FILENO) == -1) {
+                    perror(RED "Error: dup2(*input_fd, STDIN_FILENO)" RESET);
+                    free(tmp_string); 
+                    halt(EXIT_FAILURE);
+                }
+            }
+            break;
+        }
+    }       
+    free(tmp_string); 
+    tmp_string = NULL;   
+}
+
 void exec_pipe(Pipe* pipes, int pipe_count) {
     int task_pipe_fd[2];
+    int input_fd = -1;
+    int output_fd = -1;
+
+    char* tmp_string = NULL;
+
     if (pipe(task_pipe_fd) == -1) {
         perror(RED "Error: pipe(exec_pipe)" RESET);
         halt(EXIT_FAILURE);
@@ -261,11 +333,14 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
     for (int i = 0; i < pipe_count; i++) {
         pid_t pid = fork();
         if (pid < 0) {
-            perror(RED "Error: pid(exec_pipe)" RESET);
+            perror(RED "Error: fork(exec_pipe)" RESET);
             halt(EXIT_FAILURE);
         }
 
         if (pid == 0) {
+            if (i == 0) {
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, "<");     
+            }
             if (i > 0) {
                 if (dup2(pipefd[(i - 1) * 2], STDIN_FILENO) == -1) {
                     perror(RED "Error: pipe(exec_pipe)" RESET);
@@ -273,16 +348,22 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
                 }
             }
             if (i < pipe_count - 1) {
-                if (dup2(pipefd[i * 2 + 1], STDOUT_FILENO) == -1) {
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">");  
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">>");  
+
+                if (output_fd == -1 && dup2(pipefd[i * 2 + 1], STDOUT_FILENO) == -1) {
                     perror("dup2 (stdout)");
                     exit(EXIT_FAILURE);
                 }
             }
             if (i == pipe_count - 1 || pipe_count == 1) {
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">");  
+                redirect_file(pipes[i].tokens, tmp_string, &input_fd, &output_fd, ">>"); 
+
                 close(task_pipe_fd[0]);
-                if (dup2(task_pipe_fd[1], STDOUT_FILENO) == -1) {
+                if (output_fd == -1 && dup2(task_pipe_fd[1], STDOUT_FILENO) == -1) {
                     perror("dup2 (stdout)");
-                    exit(EXIT_FAILURE);
+                    halt(EXIT_FAILURE);
                 }
                 close(task_pipe_fd[1]);
             }
@@ -291,27 +372,23 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
                 close(pipefd[j]);
             }
 
-            char* request_ptr;
-            char* pipe_tokens[100];
-            int pipe_token_count = 0;
-            char* token = strtok_r(pipes[i].tokens, DELIMS, &request_ptr);
+            char* tmp_string = strtok(pipes[i].tokens, "<>");
+            char* tokens[100] = {NULL};
+            get_tokens(tmp_string, tokens, DELIMS);
+            // free(tmp_string);
 
-            while (token != NULL) {
-                pipe_tokens[pipe_token_count++] = token;
-                token = strtok_r(NULL, DELIMS, &request_ptr);
-            }
-            pipe_tokens[pipe_token_count] = NULL;
-
-            if (internal_commands(pipe_tokens)) {
+            if (internal_commands(tokens)) {
                 return;
             }
 
-            if (execvp(pipe_tokens[0], pipe_tokens) == -1) {
+            if (execvp(tokens[0], tokens) == -1) {
                 perror(RED "Error: execvp(exec_pipe)" RESET);
                 printf("\r");
                 halt(EXIT_FAILURE);
             }
         }
+        close(input_fd);
+        close(output_fd);
     }
 
     for (int i = 0; i < 2 * (pipe_count - 1); i++) {
@@ -319,20 +396,27 @@ void exec_pipe(Pipe* pipes, int pipe_count) {
     }
 
     close(task_pipe_fd[1]);
-    int nbytes;
-    int total_bytes_read = strlen(s.server_response);
-    while ((nbytes = read(task_pipe_fd[0], s.server_response + total_bytes_read, SIZE - total_bytes_read)) > 0) {
-        total_bytes_read += nbytes;
-    }
-    if (nbytes == -1) {
-        perror(RED "Error: read()" RESET);
-        exit(EXIT_FAILURE);
+    if (output_fd == -1) {
+        int nbytes;
+        int total_bytes_read = strlen(s.server_response);
+        while ((nbytes = read(task_pipe_fd[0], s.server_response + total_bytes_read, SIZE - total_bytes_read)) > 0) {
+            total_bytes_read += nbytes;
+        }
+        if (nbytes == -1) {
+            perror(RED "Error: read()" RESET);
+            exit(EXIT_FAILURE);
+        }
     }
     close(task_pipe_fd[0]);
 
     for (int i = 0; i < pipe_count; i++) {
         wait(NULL);
     }
+    if (tmp_string != NULL) {
+        free(tmp_string);
+    }
+    close(input_fd);
+    close(output_fd);
 }
 
 void exec_task(Task* task) {
@@ -345,6 +429,7 @@ void process_request(void) {
     for (int i = 0; i < u.task_count && u.tasks[i].tokens != NULL; i++) {
         exec_task(&u.tasks[i]);
     }
+    clear_uprompt();
 }
 
 void recv_eval_req_loop(void) {
