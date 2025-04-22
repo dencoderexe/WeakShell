@@ -46,6 +46,11 @@ void default_prompt(DPrompt* dprompt) {
     // Format the date and time and store in the prompt structure
     strftime(dprompt->hostdate, sizeof(dprompt->hostdate), "%d.%m.%Y", local_time);
     strftime(dprompt->hosttime, sizeof(dprompt->hosttime), "%H:%M:%S", local_time);
+
+    if (strcmp(dprompt->cwd, "") != 0) {
+        return;
+    }
+    
     // Get the current working directory, exit if it fails
     if ((getcwd(dprompt->cwd, sizeof(dprompt->cwd))) == NULL) {
         perror(RED "Error: getcwd()" RESET);

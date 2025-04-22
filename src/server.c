@@ -35,7 +35,8 @@ typedef struct DPrompt {
 // Structure for the server configuration (sockets, client connections, etc.)
 typedef struct Server {
     int server_socket;           // Server socket descriptor
-    int client_socket[MAX_CLIENTS]; // Array of client sockets
+    int client_sockets[MAX_CLIENTS]; // Array of client sockets
+    DPrompt client_dprompts[MAX_CLIENTS]; // Array of client default prompts
     fd_set client_fds;           // Set of client file descriptors for select()
     int max_fd;                  // Maximum file descriptor value
     struct sockaddr_in socket_addr_in;  // IPv4 socket address
@@ -67,44 +68,52 @@ typedef struct UPrompt {
 Server s;
 UPrompt clt;
 UPrompt cli;
-DPrompt d;
+DPrompt cli_d;
+
+int get_socket_index(int client_socket) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (s.client_sockets[i] == client_socket) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 // Function to send the default prompt to the client
-void send_dprompt(UPrompt* u, int client_socket) {
-    default_prompt(&d);
+void send_dprompt(UPrompt* u, DPrompt* d, int client_socket) {
+    default_prompt(d);
     memset(u->response, 0, sizeof(u->response));  // Clear response buffer
-    sprintf(u->response, YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", d.hostdate, d.hosttime, d.username, d.hostname, d.cwd);
+    sprintf(u->response, YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", d->hostdate, d->hosttime, d->username, d->hostname, d->cwd);
     send(client_socket, u->response, strlen(u->response), 0);
 }
 
 // Function to print the default prompt to the console
-void print_dprompt(UPrompt* u) {
-    default_prompt(&d);
+void print_dprompt(UPrompt* u, DPrompt* d) {
+    default_prompt(d);
     memset(u->response, 0, sizeof(u->response));  // Clear response buffer
-    printf(YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", d.hostdate, d.hosttime, d.username, d.hostname, d.cwd);
+    printf(YELLOW "%s|%s|%s@%s|%s" RESET "\n> ", d->hostdate, d->hosttime, d->username, d->hostname, d->cwd);
     fflush(stdout);
 }
-
 
 // Function to abort connection for a client socket
 void abort_connection(int client_socket) {
     struct sockaddr_in socket_addr;
     socklen_t addrlen = sizeof(socket_addr);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (s.client_socket[i] == client_socket) {
-            if (getpeername(client_socket, (struct sockaddr *)&socket_addr, &addrlen) == 0) {
-                printf(RED "Client %d from %s:%d was disconnected.\n" RESET, client_socket, inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
-            }
-            close(s.client_socket[i]);
-            FD_CLR(s.server_socket, &s.client_fds);
-            s.client_socket[i] = 0;
-            break;
+    int socket_id;
+    if ((socket_id = get_socket_index(client_socket)) != -1) {
+        if (getpeername(client_socket, (struct sockaddr *)&socket_addr, &addrlen) == 0) {
+            printf(RED "Client %d from %s:%d was disconnected.\n" RESET, client_socket, inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
         }
+        close(s.client_sockets[socket_id]);
+        FD_CLR(s.server_socket, &s.client_fds);
+        memset(&s.client_dprompts[socket_id], 0, sizeof(s.client_dprompts[socket_id]));
+        s.client_dprompts[socket_id];
     }
+
     s.max_fd = s.server_socket;
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (s.client_socket[i] > s.max_fd) {
-            s.max_fd = s.client_socket[i];
+        if (s.client_sockets[i] > s.max_fd) {
+            s.max_fd = s.client_sockets[i];
         }
     }
 }
@@ -113,7 +122,7 @@ void abort_connection(int client_socket) {
 static void halt(int status) {
     close(s.server_socket);
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        abort_connection(s.client_socket[i]);
+        abort_connection(s.client_sockets[i]);
     }
     exit(status);
 }
@@ -131,8 +140,8 @@ void stat(void) {
     printf(YELLOW "\n\tActive connections\n" RESET);
     printf("CONNECTION\tADDR\t\t\tPORT\n");
     for (int i = 0; i < MAX_CLIENTS; i++) {        
-        if (s.client_socket[i] != 0 && getpeername(s.client_socket[i], (struct sockaddr *)&socket_addr, &addrlen) == 0) {
-            printf("[%d]\t\t[%s]\t[%d]\n", s.client_socket[i], inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
+        if (s.client_sockets[i] != 0 && getpeername(s.client_sockets[i], (struct sockaddr *)&socket_addr, &addrlen) == 0) {
+            printf("[%d]\t\t[%s]\t[%d]\n", s.client_sockets[i], inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
         }
     }
 }
@@ -144,8 +153,10 @@ static void help(void) {
 }
 
 // Function to change the current working directory
-static void cd(char* path) {
+void cd(char* path, DPrompt* d) {
+    chdir(d->cwd);
     chdir(path);
+    getcwd(d->cwd, sizeof(d->cwd));
 }
 
 // Function to bind a socket using IPv4 address and port
@@ -227,20 +238,24 @@ void accept_connection(void) {
     struct sockaddr_in socket_address;
     if ((client_socket = accept(s.server_socket, (struct sockaddr *)&socket_address, (socklen_t *)&addrlen)) < 0) {
         perror(RED "Error: accept()" RESET);
-        halt(EXIT_FAILURE);
+        // halt(EXIT_FAILURE);
+        return;
     }
-    else {
-        printf(CYAN "Client %d connected from %s:%d.\n" RESET, client_socket, inet_ntoa(socket_address.sin_addr), ntohs(socket_address.sin_port));
-        print_dprompt(&cli);
-        send_dprompt(&clt, client_socket);
-    }
+
+    printf(CYAN "Client %d connected from %s:%d.\n" RESET, client_socket, inet_ntoa(socket_address.sin_addr), ntohs(socket_address.sin_port));  
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
         // If position is empty
-        if (s.client_socket[i] == 0) {
-            s.client_socket[i] = client_socket;
+        if (s.client_sockets[i] == 0) {
+            s.client_sockets[i] = client_socket;
             break;
         }
+    }
+
+    int socket_id;
+    if ((socket_id = get_socket_index(client_socket)) != -1) {
+        print_dprompt(&cli, &s.client_dprompts[socket_id]);
+        send_dprompt(&clt, &s.client_dprompts[socket_id], client_socket);
     }
 }
 
@@ -345,7 +360,7 @@ int internal_command(char** tokens) {
     }
     else if (strcmp(tokens[0], "stat") == 0) {
         stat();
-        return 0;
+        return 1;
     }
     else if (strcmp(tokens[0], "abort") == 0) {
         return 1;
@@ -359,7 +374,7 @@ int internal_command(char** tokens) {
     return 0;
 }
 
-void exec_spec_commands(UPrompt* u) {
+void exec_spec_commands(UPrompt* u, DPrompt* d) {
     char* tmp_string = strdup(u->request);
     char tmp_delims[100] = "<>;|";
     strcat(tmp_delims, DELIMS);
@@ -378,8 +393,8 @@ void exec_spec_commands(UPrompt* u) {
             abort_connection(client_socket);
             i++;
         }
-        else if (strcmp(tokens[0], "cd") == 0 && tokens[1] != NULL) {
-            cd(tokens[1]);
+        else if (strcmp(tokens[i], "cd") == 0 && tokens[i+1] != NULL) {
+            cd(tokens[i+1], d);
             i++;
         }
         else if (strcmp(tokens[0], "halt") == 0) {
@@ -391,8 +406,8 @@ void exec_spec_commands(UPrompt* u) {
 }
 
 // Function to parse a client request into tasks and pipes
-void parse_request(UPrompt* u) {
-    exec_spec_commands(u);
+void parse_request(UPrompt* u, DPrompt* d) {
+    exec_spec_commands(u, d);
     parse_semicolon(u);
     for (int i = 0; i < u->task_count - 1; i++) {
         parse_pipeline(&u->tasks[i]);
@@ -458,7 +473,7 @@ void redirect_file(char* tokens, char* tmp_string, int* input_fd, int* output_fd
 }
 
 // Function to execute pipeline tasks with redirection and pipe handling
-void exec_pipe(UPrompt* u, Pipe* pipes, int pipe_count) {
+void exec_pipe(UPrompt* u, Pipe* pipes, DPrompt* d, int pipe_count) {
     int task_pipe_fd[2];
     int input_fd = -1;
     int output_fd = -1;
@@ -531,10 +546,13 @@ void exec_pipe(UPrompt* u, Pipe* pipes, int pipe_count) {
                 exit(EXIT_SUCCESS);
             }
 
+            chdir(d->cwd);
             if (execvp(tokens[0], tokens) == -1) {
                 perror(RED "Error: execvp(exec_pipe)" RESET);
                 printf("\r");
-                halt(EXIT_FAILURE);
+                close(input_fd);
+                close(output_fd);
+                exit(EXIT_FAILURE);
             }
             close(input_fd);
             close(output_fd);
@@ -572,40 +590,45 @@ void exec_pipe(UPrompt* u, Pipe* pipes, int pipe_count) {
 }
 
 // Executes the task passed via pipes
-void exec_task(UPrompt* u, Task* task) {
-    exec_pipe(u, task->pipes, task->pipe_count - 1);
+void exec_task(UPrompt* u, Task* task, DPrompt* d) {
+    exec_pipe(u, task->pipes, d, task->pipe_count - 1);
 }
 
 // Processes the user's request
-void process_request(UPrompt* u) {
+void process_request(UPrompt* u, DPrompt* d) {
     memset(u->response, 0, sizeof(u->response));  // Clear response buffer
 
     for (int i = 0; i < u->task_count && u->tasks[i].tokens != NULL; i++) {
-        exec_task(u, &u->tasks[i]);
+        exec_task(u, &u->tasks[i], d);
     }
     clear_uprompt(u);
 }
 
 // Main loop for receiving and processing client requests
 void recv_eval_req_loop(int client_socket) {
-    memset(&cli, 0, sizeof(cli));
+    memset(&clt, 0, sizeof(clt));
 
     receive(&clt, client_socket);
 
-    parse_request(&clt);
-    process_request(&clt);
+    int socket_id;
+    if ((socket_id = get_socket_index(client_socket)) != -1) {
+        parse_request(&clt, &s.client_dprompts[socket_id]);
+        process_request(&clt, &s.client_dprompts[socket_id]);
+    }
+
     if (strlen(clt.response) == 0) {
         strcpy(clt.response, "\r");
     }
     send(client_socket, clt.response, strlen(clt.response), 0);
-    send_dprompt(&clt, client_socket);
+
+    send_dprompt(&clt, &s.client_dprompts[socket_id], client_socket);
 }
 
 // Function for handling user input from the terminal
 void* cli_input(void* arg) {
     (void)arg;
     while (true) {
-        print_dprompt(&cli);
+        print_dprompt(&cli, &cli_d);
 
         ssize_t bytes_read;
         size_t uprompt_len;
@@ -627,8 +650,8 @@ void* cli_input(void* arg) {
             halt(EXIT_SUCCESS);
         }
         else {
-            parse_request(&cli);
-            process_request(&cli);
+            parse_request(&cli, &cli_d);
+            process_request(&cli, &cli_d);
             if (strlen(cli.response) != 0) {
                 printf("%s", cli.response);
             }
@@ -648,7 +671,7 @@ void server(char* port, char* addr, char* socket_path) {
     bind_socket(port, addr, socket_path);
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        s.client_socket[i] = 0;
+        s.client_sockets[i] = 0;
     }
 
     while (true) {
@@ -658,7 +681,7 @@ void server(char* port, char* addr, char* socket_path) {
 
         // Add child sockets to set
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            int fd = s.client_socket[i];
+            int fd = s.client_sockets[i];
 
             // If valid socket descriptor then add to read list
             if (fd > 0) {
@@ -671,18 +694,18 @@ void server(char* port, char* addr, char* socket_path) {
             }
         }
 
-        int activity = select(s.max_fd + 1, &s.client_fds, NULL, NULL, NULL);
-        if (activity < 0) {
-            perror(RED "Error: select()" RESET);
-            exit(EXIT_FAILURE);
-        }
+        /*int activity =*/ select(s.max_fd + 1, &s.client_fds, NULL, NULL, NULL);
+        // if (activity < 0) {
+        //     perror(RED "Error: select()" RESET);
+        //     exit(EXIT_FAILURE);
+        // }
 
         if (FD_ISSET(s.server_socket, &s.client_fds)) {
             accept_connection();
         }
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            int fd = s.client_socket[i];
+            int fd = s.client_sockets[i];
     
             if (FD_ISSET(fd, &s.client_fds)) {
                 recv_eval_req_loop(fd);
