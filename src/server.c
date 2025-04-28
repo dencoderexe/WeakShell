@@ -34,14 +34,14 @@ typedef struct DPrompt {
 
 // Structure for the server configuration (sockets, client connections, etc.)
 typedef struct Server {
-    int server_socket;           // Server socket descriptor
-    int client_sockets[MAX_CLIENTS]; // Array of client sockets
+    int server_socket;                  // Server socket descriptor
+    int client_sockets[MAX_CLIENTS];    // Array of client sockets
     DPrompt client_dprompts[MAX_CLIENTS]; // Array of client default prompts
-    fd_set client_fds;           // Set of client file descriptors for select()
-    int max_fd;                  // Maximum file descriptor value
+    fd_set client_fds;                  // Set of client file descriptors for select()
+    int max_fd;                         // Maximum file descriptor value
     struct sockaddr_in socket_addr_in;  // IPv4 socket address
     struct sockaddr_un socket_addr_un;  // UNIX socket address
-    char server_response[SIZE*10]; // Buffer for server responses
+    char server_response[SIZE*10];      // Buffer for server responses
 } Server;
 
 // Structure for handling pipe tokens (used in command execution)
@@ -101,18 +101,16 @@ void abort_connection(int client_socket) {
     socklen_t addrlen = sizeof(socket_addr);
     int socket_id;
     if ((socket_id = get_socket_index(client_socket)) != -1) {
-        if (getpeername(client_socket, (struct sockaddr *)&socket_addr, &addrlen) == 0) {
-            printf(RED "Client %d from %s:%d was disconnected.\n" RESET, client_socket, inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
-        }
+        printf(RED "Client %d was disconnected.\n" RESET, client_socket);
+        FD_CLR(client_socket, &s.client_fds);
         close(s.client_sockets[socket_id]);
-        FD_CLR(s.server_socket, &s.client_fds);
         memset(&s.client_dprompts[socket_id], 0, sizeof(s.client_dprompts[socket_id]));
-        s.client_dprompts[socket_id];
+        s.client_sockets[socket_id] = 0;
     }
 
     s.max_fd = s.server_socket;
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (s.client_sockets[i] > s.max_fd) {
+        if (s.client_sockets[i] > 0 && s.client_sockets[i] > s.max_fd) {
             s.max_fd = s.client_sockets[i];
         }
     }
@@ -129,19 +127,35 @@ static void halt(int status) {
 
 // Function to display active sockets and connections
 void stat(void) {
-    struct sockaddr_in socket_addr;
-    socklen_t addrlen = sizeof(socket_addr);
+    struct sockaddr_in socket_addr_in;
+    struct sockaddr_un socket_addr_un;
+    socklen_t addrlen = sizeof(socket_addr_in);
+
     printf(YELLOW "\tActive sockets\n" RESET);
-    printf("SOCKET\t\tADDR\t\t\tPORT\n");
-    if (getsockname(s.server_socket, (struct sockaddr *)&socket_addr, &addrlen) == 0) {
-        printf("[1]\t\t[%s]\t[%d]\n", inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
+    if (strlen(s.socket_addr_un.sun_path) != 0) {
+        printf("SOCKET\t\tPATH\n");
+        printf("[1]\t\t[%s]\n", s.socket_addr_un.sun_path);
+        
+        printf(YELLOW "\n\tActive connections\n" RESET);
+        printf("CONNECTION\tPATH\n");
+        for (int i = 0; i < MAX_CLIENTS; i++) {        
+            if (s.client_sockets[i] != 0 ) {
+                printf("[%d]\t\t[%s]\n", s.client_sockets[i], s.socket_addr_un.sun_path);
+            }
+        }
     }
-    
-    printf(YELLOW "\n\tActive connections\n" RESET);
-    printf("CONNECTION\tADDR\t\t\tPORT\n");
-    for (int i = 0; i < MAX_CLIENTS; i++) {        
-        if (s.client_sockets[i] != 0 && getpeername(s.client_sockets[i], (struct sockaddr *)&socket_addr, &addrlen) == 0) {
-            printf("[%d]\t\t[%s]\t[%d]\n", s.client_sockets[i], inet_ntoa(socket_addr.sin_addr), ntohs(socket_addr.sin_port));
+    else {
+        printf("SOCKET\t\tADDR\t\t\tPORT\n");
+        if (getsockname(s.server_socket, (struct sockaddr *)&socket_addr_in, &addrlen) == 0) {
+            printf("[1]\t\t[%s]\t[%d]\n", inet_ntoa(socket_addr_in.sin_addr), ntohs(socket_addr_in.sin_port));
+        }
+        
+        printf(YELLOW "\n\tActive connections\n" RESET);
+        printf("CONNECTION\tADDR\t\t\tPORT\n");
+        for (int i = 0; i < MAX_CLIENTS; i++) {        
+            if (s.client_sockets[i] != 0 && getpeername(s.client_sockets[i], (struct sockaddr *)&socket_addr_in, &addrlen) == 0) {
+                printf("[%d]\t\t[%s]\t[%d]\n", s.client_sockets[i], inet_ntoa(socket_addr_in.sin_addr), ntohs(socket_addr_in.sin_port));
+            }
         }
     }
 }
@@ -234,16 +248,29 @@ void bind_socket(char* port, char* addr, char* socket_path) {
 
 // Function to accept an incoming client connection
 void accept_connection(void) {
-    int client_socket, addrlen;
-    struct sockaddr_in socket_address;
-    if ((client_socket = accept(s.server_socket, (struct sockaddr *)&socket_address, (socklen_t *)&addrlen)) < 0) {
-        perror(RED "Error: accept()" RESET);
-        // halt(EXIT_FAILURE);
-        return;
+    int client_socket;
+    socklen_t addrlen;
+    struct sockaddr_in socket_addr_in;
+    struct sockaddr_un socket_addr_un;
+    if (strlen(s.socket_addr_un.sun_path) != 0) {
+        addrlen = sizeof(s.socket_addr_un);
+        if ((client_socket = accept(s.server_socket, (struct sockaddr *)&socket_addr_un, (socklen_t *)&addrlen)) < 0) {
+            perror(RED "Error: accept()" RESET);
+            halt(EXIT_FAILURE);
+            return;
+        }
+        printf(CYAN "Client %d connected from <%s>.\n" RESET, client_socket, s.socket_addr_un.sun_path); 
     }
-
-    printf(CYAN "Client %d connected from %s:%d.\n" RESET, client_socket, inet_ntoa(socket_address.sin_addr), ntohs(socket_address.sin_port));  
-
+    else {
+        addrlen = sizeof(s.socket_addr_in);
+        if ((client_socket = accept(s.server_socket, (struct sockaddr *)&socket_addr_in, (socklen_t *)&addrlen)) < 0) {
+            perror(RED "Error: accept()" RESET);
+            halt(EXIT_FAILURE);
+            return;
+        }
+        printf(CYAN "Client %d connected from %s:%d.\n" RESET, client_socket, inet_ntoa(socket_addr_in.sin_addr), ntohs(socket_addr_in.sin_port)); 
+    }
+    
     for (int i = 0; i < MAX_CLIENTS; i++) {
         // If position is empty
         if (s.client_sockets[i] == 0) {
@@ -254,7 +281,7 @@ void accept_connection(void) {
 
     int socket_id;
     if ((socket_id = get_socket_index(client_socket)) != -1) {
-        print_dprompt(&cli, &s.client_dprompts[socket_id]);
+        print_dprompt(&cli, &cli_d);
         send_dprompt(&clt, &s.client_dprompts[socket_id], client_socket);
     }
 }
@@ -540,13 +567,14 @@ void exec_pipe(UPrompt* u, Pipe* pipes, DPrompt* d, int pipe_count) {
             char* tokens[100] = {NULL};
             get_tokens(tmp_string, tokens, DELIMS);
 
+            chdir(d->cwd);
             if (internal_command(tokens)) {
+                printf("\r");
                 close(input_fd);
                 close(output_fd);
                 exit(EXIT_SUCCESS);
             }
 
-            chdir(d->cwd);
             if (execvp(tokens[0], tokens) == -1) {
                 perror(RED "Error: execvp(exec_pipe)" RESET);
                 printf("\r");
@@ -615,13 +643,18 @@ void recv_eval_req_loop(int client_socket) {
         parse_request(&clt, &s.client_dprompts[socket_id]);
         process_request(&clt, &s.client_dprompts[socket_id]);
     }
+    else {
+        return;
+    }
 
     if (strlen(clt.response) == 0) {
         strcpy(clt.response, "\r");
     }
-    send(client_socket, clt.response, strlen(clt.response), 0);
 
-    send_dprompt(&clt, &s.client_dprompts[socket_id], client_socket);
+    send(client_socket, clt.response, strlen(clt.response), 0);
+    if (s.client_sockets[socket_id] > 0) {
+        send_dprompt(&clt, &s.client_dprompts[socket_id], client_socket);
+    }
 }
 
 // Function for handling user input from the terminal
@@ -694,11 +727,11 @@ void server(char* port, char* addr, char* socket_path) {
             }
         }
 
-        /*int activity =*/ select(s.max_fd + 1, &s.client_fds, NULL, NULL, NULL);
-        // if (activity < 0) {
-        //     perror(RED "Error: select()" RESET);
-        //     exit(EXIT_FAILURE);
-        // }
+        int activity = select(s.max_fd + 1, &s.client_fds, NULL, NULL, NULL);
+        if (activity < 0) {
+            perror(RED "Error: select()" RESET);
+            exit(EXIT_FAILURE);
+        }
 
         if (FD_ISSET(s.server_socket, &s.client_fds)) {
             accept_connection();
